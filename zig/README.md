@@ -3,7 +3,8 @@
 These are the canonical Zig bindings for the MuJoCo
 physics engine.
 
-This package provides a way to build zig and interact with libmujoco / mujoco.h using Zig direct C interopt feature
+This package provides a way to build zig and interact with libmujoco / mujoco.h using Zig direct C interop feature.
+
 > [!IMPORTANT]
 > _These bindings are still a WIP. 
 
