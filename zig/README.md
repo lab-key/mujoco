@@ -15,8 +15,11 @@ This package provides a way to build zig and interact with libmujoco / mujoco.h 
 
 - To compile the the library run `zig build`
   All the files in the `zig/examples` directory get comiled by default.
-  As an example to run them all you need to do is remove the `.zig` extension from the filename
-  So newexample.zig can be ran with
+  
+  As an example to run them all you need to do is remove the `.zig` extension from the filename.
+  
+  So newexample.zig can be ran / built with:
+  
   ```sh
   zig build run-newexample
   ```
