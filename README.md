@@ -101,7 +101,8 @@ section of the documentation.
 ### Zig ( 0.15.2 ) - Build & Use libmujoco
 
 ```bash
-zig build run-basic model/car/car.xml
+zig build
+./zig-out/bin/basic model/car/car.xml # Or any modelfile
 ```
 
 ## Contributing
