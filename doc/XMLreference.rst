@@ -7431,6 +7431,12 @@ smallest signed distance between the surfaces of two geoms using the narrow-phas
 computation is always performed, independently of the standard collision :ref:`selection and filtering<coSelection>`
 pipeline. These 3 sensors share some common properties:
 
+.. admonition:: different (correct) behavior under `nativeccd`
+   :class: note
+
+   As explained in :ref:`Collision Detection<coDistance>`, distances are inaccurate when using the
+   :ref:`legacy CCD pipeline<coCCD>`, and its use is discouraged.
+
 .. _collision-sensors-cutoff:
 
 :at:`cutoff`
@@ -7440,22 +7446,11 @@ pipeline. These 3 sensors share some common properties:
    to geom-geom penetration) will be reported by :ref:`sensor/distance<sensor-distance>`.
    In order to determine collision properties of non-penetrating geom pairs, a positive :at:`cutoff` is required.
 
-   .. admonition:: different (correct) behavior under `nativeccd`
-      :class: note
-
-      As explained in :ref:`Collision Detection<coDistance>`, distances are inaccurate when using the
-      :ref:`legacy CCD pipeline<coCCD>`, and its use is discouraged.
-
 :at:`geom1`, :at:`geom2`, :at:`body1`, :at:`body2`
    For all 3 collision sensor types, the two colliding geoms can be specified explicitly using the :at:`geom1` and
    :at:`geom2` attributes or implicitly, using :at:`body1`, :at:`body2`. In the latter case the sensor will iterate over
    all geoms of the specified body or bodies (mixed specification like :at:`geom1`, :at:`body2` are allowed), and
    select the collision with the smallest signed distance.
-
-sequential sensors
-   When multiple collision sensors are defined sequentially and have identical attributes (:at:`geom1`, :at:`body1`,
-   :at:`geom2`, :at:`body2`, :at:`cutoff`), for example when both distance and normal are queried for the same geom
-   pair, the collision functions will be called once for the whole sensor block, avoiding repeated computation.
 
 .. _sensor-distance:
 

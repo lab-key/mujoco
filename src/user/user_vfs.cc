@@ -47,22 +47,15 @@ struct ResourceFileData {
   bool is_read = false;
 };
 
-time_t GetModifiedTime(const char* path) {
-  struct stat file_stat;
-  if (stat(path, &file_stat) == 0) {
-    return file_stat.st_mtime;
-  }
-  return 0;
-}
-
 int OpenFile(const char* filename, mjResource* resource) {
-  const time_t mtime = GetModifiedTime(filename);
-  if (mtime != 0) {
+  struct stat file_stat;
+  if (stat(filename, &file_stat) == 0) {
     ResourceFileData* data = new ResourceFileData();
     resource->data = data;
 
-    data->modified_time = mtime;
-    mju_encodeBase64(resource->timestamp, (uint8_t*)&mtime, sizeof(time_t));
+    data->modified_time = file_stat.st_mtime;
+    mju_encodeBase64(resource->timestamp, (uint8_t*)&file_stat.st_mtime,
+                     sizeof(time_t));
     return 1;
   }
   return 0;
