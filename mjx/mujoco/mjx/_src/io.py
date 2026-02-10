@@ -571,6 +571,7 @@ def _make_data_public_fields(m: types.Model) -> Dict[str, Any]:
       'time': (float_,),
       'qvel': (m.nv, float_),
       'act': (m.na, float_),
+      'history': (m.nhistory, float_),
       'plugin_state': (m.npluginstate, float_),
       'qacc_warmstart': (m.nv, float_),
       'ctrl': (m.nu, float_),
@@ -875,7 +876,7 @@ def _make_data_warp(
 
   fields = _make_data_public_fields(m)
   for k in fields:
-    if k in {'userdata', 'plugin_state'}:
+    if k in {'userdata', 'plugin_state', 'history'}:
       continue
     if not hasattr(dw, k):
       raise ValueError(f'Public data field {k} not found in Warp data.')
@@ -1659,18 +1660,24 @@ def _get_data_into_cpp(
   # mjx.Model which we don't have access to in this function.
   fields_to_check = ['qpos', 'qvel', 'act', 'mocap_pos', 'mocap_quat']
   for i in range(batch_size):
-    d_i = jax.tree_util.tree_map(lambda x, i=i: x[i], d) if batched else d
+    d_i: types.Data = jax.tree_util.tree_map(
+        lambda x, i=i: x[i], d) if batched else d
     src_data = mj_data_list[i]
 
+    needs_syncing = False
     for field in fields_to_check:
       mj_value = getattr(src_data, field)
       mjx_value = np.asarray(getattr(d_i, field))
       if not np.allclose(mj_value, mjx_value):
-        raise ValueError(
-            f'State mismatch at batch index {i}, field {field}: underlying '
-            'MjData does not match mjx.Data. The mjx.Data may have been '
-            'modified without updating the underlying MjData.'
-        )
+        needs_syncing = True
+        break
+    if needs_syncing:
+      src_data.qpos[:] = d_i.qpos
+      src_data.qvel[:] = d_i.qvel
+      src_data.act[:] = d_i.act
+      src_data.mocap_pos[:] = d_i.mocap_pos
+      src_data.mocap_quat[:] = d_i.mocap_quat
+      mujoco.mj_kinematics(m, src_data)
 
   for i in range(batch_size):
     result_i = result[i] if batched else result
@@ -1729,6 +1736,7 @@ _STATE_MAP = {
     mujoco.mjtState.mjSTATE_QPOS: 'qpos',
     mujoco.mjtState.mjSTATE_QVEL: 'qvel',
     mujoco.mjtState.mjSTATE_ACT: 'act',
+    mujoco.mjtState.mjSTATE_HISTORY: 'history',
     mujoco.mjtState.mjSTATE_WARMSTART: 'qacc_warmstart',
     mujoco.mjtState.mjSTATE_CTRL: 'ctrl',
     mujoco.mjtState.mjSTATE_QFRC_APPLIED: 'qfrc_applied',
@@ -1752,6 +1760,7 @@ def _state_elem_size(m: types.Model, state_enum: mujoco.mjtState) -> int:
       'qpos',
       'qvel',
       'act',
+      'history',
       'qacc_warmstart',
       'ctrl',
       'qfrc_applied',
@@ -1767,6 +1776,7 @@ def _state_elem_size(m: types.Model, state_enum: mujoco.mjtState) -> int:
             'qpos': 'nq',
             'qvel': 'nv',
             'act': 'na',
+            'history': 'nhistory',
             'qacc_warmstart': 'nv',
             'ctrl': 'nu',
             'qfrc_applied': 'nv',
