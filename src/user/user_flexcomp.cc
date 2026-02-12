@@ -81,7 +81,7 @@ mjCFlexcomp::mjCFlexcomp(void) {
   mjuu_setvec(scale, 1, 1, 1);
   mass = 1;
   inertiabox = 0.005;
-  equality = false;
+  equality = 0;
   mjuu_setvec(pos, 0, 0, 0);
   mjuu_setvec(quat, 1, 0, 0, 0);
   rigid = false;
@@ -204,8 +204,9 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
   if (pingridrange.size()%(2*dflex->dim)) {
     return comperr(error, "Pin grid range number of must be multiple of 2*dim", error_sz);
   }
-  if (type != mjFCOMPTYPE_GRID && !(pingrid.empty() && pingridrange.empty())) {
-    return comperr(error, "Pin grid(range) can only be used with grid type", error_sz);
+  if (type != mjFCOMPTYPE_GRID && !(pingrid.empty() && pingridrange.empty()) &&
+      doftype != mjFCOMPDOF_TRILINEAR && doftype != mjFCOMPDOF_QUADRATIC) {
+    return comperr(error, "Pin grid(range) can only be used with grid or interpolated", error_sz);
   }
   if (dflex->dim == 1 && !(pingrid.empty() && pingridrange.empty())) {
     return comperr(error, "Pin grid(range) cannot be used with dim=1", error_sz);
@@ -267,7 +268,13 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
   }
 
   // construct pinned array
-  pinned = vector<bool>(npnt, rigid);
+  int nnode = 0;
+  if (doftype == mjFCOMPDOF_TRILINEAR) {
+    nnode = 8;
+  } else if (doftype == mjFCOMPDOF_QUADRATIC) {
+    nnode = 27;
+  }
+  pinned = vector<bool>(std::max(npnt, nnode), rigid);
 
   // handle pins if user did not specify rigid
   if (!rigid) {
@@ -299,8 +306,14 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
     // process pingrid
     for (int i=0; i < (int)pingrid.size(); i+=dflex->dim) {
       // check range
+      int count_check[3] = {count[0], count[1], count[2]};
+      if (type != mjFCOMPTYPE_GRID && (doftype == mjFCOMPDOF_TRILINEAR ||
+                                       doftype == mjFCOMPDOF_QUADRATIC)) {
+        int dim = (doftype == mjFCOMPDOF_TRILINEAR) ? 2 : 3;
+        count_check[0] = count_check[1] = count_check[2] = dim;
+      }
       for (int k=0; k < dflex->dim; k++) {
-        if (pingrid[i+k] < 0 || pingrid[i+k] >= count[k]) {
+        if (pingrid[i+k] < 0 || pingrid[i+k] >= count_check[k]) {
           return comperr(error, "pingrid out of range", error_sz);
         }
       }
@@ -392,6 +405,35 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
       for (int i=0; i < (int)element.size(); i++) {
         element[i] += reindex[element[i]];
       }
+
+      // compact point, texcoord, pinned arrays
+      int new_npnt = 0;
+      for (int i=0; i < npnt; i++) {
+        if (used[i]) {
+          point[3*new_npnt+0] = point[3*i+0];
+          point[3*new_npnt+1] = point[3*i+1];
+          point[3*new_npnt+2] = point[3*i+2];
+
+          if (!texcoord.empty()) {
+            texcoord[2*new_npnt+0] = texcoord[2*i+0];
+            texcoord[2*new_npnt+1] = texcoord[2*i+1];
+          }
+
+          pinned[new_npnt] = pinned[i];
+          new_npnt++;
+        }
+      }
+
+      // resize arrays
+      point.resize(3*new_npnt);
+      if (!texcoord.empty()) {
+        texcoord.resize(2*new_npnt);
+      }
+      pinned.resize(std::max(new_npnt, nnode));
+      used.assign(new_npnt, true);
+
+      // update count
+      npnt = new_npnt;
     }
   }
 
@@ -441,8 +483,8 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
       continue;
     }
 
-    // pinned or trilinear: parent body
-    if (pinned[i] || doftype == mjFCOMPDOF_TRILINEAR) {
+    // pinned or trilinear or quadratic: parent body
+    if (pinned[i] || doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) {
       mjs_appendString(pf->vertbody, mjs_getName(body->element)->c_str());
 
       // add plugin
@@ -529,25 +571,35 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
   }
 
   // create nodal mesh for trilinear interpolation
-  if (doftype == mjFCOMPDOF_TRILINEAR) {
-    std::vector<double> node(24, 0);
-    for (int i=0; i < 2; i++) {
-      for (int j=0; j < 2; j++) {
-        for (int k=0; k < 2; k++) {
-          if (pinned[i*4+j*2+k]) {
-            node[3*(i*4+j*2+k)+0] = i == 0 ? minmax[0] : minmax[3];
-            node[3*(i*4+j*2+k)+1] = j == 0 ? minmax[1] : minmax[4];
-            node[3*(i*4+j*2+k)+2] = k == 0 ? minmax[2] : minmax[5];
+  if (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) {
+    int order = doftype == mjFCOMPDOF_TRILINEAR ? 1 : 2;
+    flex->SetOrder(order);
+    std::vector<double> node(3*(order+1)*(order+1)*(order+1), 0);
+    int idx = 0;
+    double step = 1.0 / (double)order;
+    double massP2[3] = {1. / 6., 2. / 3., 1. / 6.};
+    for (int i=0; i <= order; i++) {
+      for (int j=0; j <= order; j++) {
+        for (int k=0; k <= order; k++) {
+          if (pinned[idx]) {
+            node[3*idx+0] = minmax[0] + i * step * (minmax[3] - minmax[0]);
+            node[3*idx+1] = minmax[1] + j * step * (minmax[4] - minmax[1]);
+            node[3*idx+2] = minmax[2] + k * step * (minmax[5] - minmax[2]);
             mjs_appendString(pf->nodebody, mjs_getName(body->element)->c_str());
+            idx++;
             continue;
           }
 
           mjsBody* pb = mjs_addBody(body, 0);
-          pb->pos[0] = i == 0 ? minmax[0] : minmax[3];
-          pb->pos[1] = j == 0 ? minmax[1] : minmax[4];
-          pb->pos[2] = k == 0 ? minmax[2] : minmax[5];
+          pb->pos[0] = minmax[0] + i * step * (minmax[3] - minmax[0]);
+          pb->pos[1] = minmax[1] + j * step * (minmax[4] - minmax[1]);
+          pb->pos[2] = minmax[2] + k * step * (minmax[5] - minmax[2]);
           mjuu_zerovec(pb->ipos, 3);
-          pb->mass = mass / 8;
+          if (doftype == mjFCOMPDOF_TRILINEAR) {
+            pb->mass = mass / 8;
+          } else {
+            pb->mass = mass * massP2[i] * massP2[j] * massP2[k];
+          }
           pb->inertia[0] = pb->mass*(2.0*inertiabox*inertiabox)/3.0;
           pb->inertia[1] = pb->mass*(2.0*inertiabox*inertiabox)/3.0;
           pb->inertia[2] = pb->mass*(2.0*inertiabox*inertiabox)/3.0;
@@ -573,6 +625,8 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
           mju::sprintf_arr(txt, "%s_%d_%d_%d", name.c_str(), i, j, k);
           mjs_setName(pb->element, txt);
           mjs_appendString(pf->nodebody, mjs_getName(pb->element)->c_str());
+
+          idx++;
         }
       }
     }
@@ -582,7 +636,7 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
     }
   }
 
-  if (!centered || doftype == mjFCOMPDOF_TRILINEAR) {
+  if (!centered || doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) {
     mjs_setDouble(pf->vert, point.data(), point.size());
   }
 
@@ -590,7 +644,7 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz) {
   if (equality) {
     mjsEquality* pe = mjs_addEquality(&model->spec, &def.spec);
     mjs_setDefault(pe->element, &model->Default()->spec);
-    pe->type = mjEQ_FLEX;
+    pe->type = equality == 1 ? mjEQ_FLEX : mjEQ_FLEXVERT;
     pe->active = true;
     mjs_setString(pe->name1, name.c_str());
   }

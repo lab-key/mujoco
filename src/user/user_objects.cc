@@ -2489,8 +2489,8 @@ void mjCBody::Compile(void) {
                      joints[0]->spec.type == mjJNT_FREE  &&  // it is a free joint AND
                      bodies.empty()                      &&  // no child bodies AND
                      (joints[0]->spec.align == 1 ||          // either joint.align="true"
-                      (joints[0]->spec.align == 2        &&  // or joint.align="auto"
-                       compiler->alignfree)));                  //  and compiler->align="true"
+                      (joints[0]->spec.align == 2        &&  // or (joint.align="auto"
+                       compiler->alignfree)));               //     and compiler->align="true")
 
   // free-joint alignment, phase 1 (this body + child geoms)
   double ipos_inverse[3], iquat_inverse[4];
@@ -4116,15 +4116,23 @@ void mjCCamera::Compile(void) {
                    name.c_str(), id, fovy);
   }
 
-  // check that specs are not duplicated
-  if ((principal_length[0] && principal_pixel[0]) ||
-      (principal_length[1] && principal_pixel[1])) {
-    throw mjCError(this, "principal length duplicated in camera");
+  // check for advanced camera intrinsic parameters
+  bool has_intrinsic = focal_length[0]     || focal_length[1]     ||
+                       focal_pixel[0]      || focal_pixel[1]      ||
+                       principal_length[0] || principal_length[1] ||
+                       principal_pixel[0]  || principal_pixel[1];
+  bool has_sensorsize = sensor_size[0] > 0 && sensor_size[1] > 0;
+
+  // intrinsic params require sensorsize
+  if (has_intrinsic && !has_sensorsize) {
+    throw mjCError(this, "focal/principal require sensorsize in camera '%s' (id = %d)",
+                   name.c_str(), id);
   }
 
-  if ((focal_length[0] && focal_pixel[0]) ||
-      (focal_length[1] && focal_pixel[1])) {
-    throw mjCError(this, "focal length duplicated in camera");
+  // sensorsize requires resolution
+  if (has_sensorsize && (resolution[0] <= 0 || resolution[1] <= 0)) {
+    throw mjCError(this, "sensorsize requires positive resolution in camera '%s' (id = %d)",
+                   name.c_str(), id);
   }
 
   // compute number of pixels per unit length
@@ -4134,11 +4142,11 @@ void mjCCamera::Compile(void) {
       (float)resolution[1] / sensor_size[1],
     };
 
-    // defaults are zero, so only one term in each sum is nonzero
-    intrinsic[0] = focal_pixel[0] / pixel_density[0] + focal_length[0];
-    intrinsic[1] = focal_pixel[1] / pixel_density[1] + focal_length[1];
-    intrinsic[2] = principal_pixel[0] / pixel_density[0] + principal_length[0];
-    intrinsic[3] = principal_pixel[1] / pixel_density[1] + principal_length[1];
+    // pixel values override length values when both are specified
+    intrinsic[0] = focal_pixel[0] ? focal_pixel[0] / pixel_density[0] : focal_length[0];
+    intrinsic[1] = focal_pixel[1] ? focal_pixel[1] / pixel_density[1] : focal_length[1];
+    intrinsic[2] = principal_pixel[0] ? principal_pixel[0] / pixel_density[0] : principal_length[0];
+    intrinsic[3] = principal_pixel[1] ? principal_pixel[1] / pixel_density[1] : principal_length[1];
 
     // fovy with principal point at (0, 0)
     fovy = std::atan2(sensor_size[1]/2, intrinsic[1]) * 360.0 / mjPI;
@@ -4817,7 +4825,7 @@ void mjCTexture::BuiltinCube(void) {
   if (w > std::numeric_limits<int>::max() / w) {
     throw mjCError(this, "Cube texture width is too large.");
   }
-  int ww = width*width;
+  mjtSize ww = width*width;
 
   // convert fixed colors
   for (int j = 0; j < 3; j++) {
@@ -4830,7 +4838,7 @@ void mjCTexture::BuiltinCube(void) {
 
   // gradient
   if (builtin == mjBUILTIN_GRADIENT) {
-    if (ww > std::numeric_limits<int>::max() / 18) {
+    if (ww > std::numeric_limits<std::int64_t>::max() / 18) {
       throw mjCError(this, "Gradient texture width is too large.");
     }
     for (int r = 0; r < w; r++) {
@@ -5168,7 +5176,7 @@ void mjCTexture::LoadCubeSingle(std::string filename, const mjVFS* vfs) {
 
   // allocate data
   std::int64_t size = static_cast<std::int64_t>(width)*height;
-  if (size >= std::numeric_limits<int>::max() / 3 || size <= 0) {
+  if (size >= std::numeric_limits<std::int64_t>::max() / 3 || size <= 0) {
     throw mjCError(this, "Cube texture too large");
   }
   try {
@@ -5285,7 +5293,7 @@ void mjCTexture::LoadCubeSeparate(const mjVFS* vfs) {
         }
         height = 6*width;
         std::int64_t size = static_cast<std::int64_t>(width)*height;
-        if (size >= std::numeric_limits<int>::max() / 3 || size <= 0) {
+        if (size >= std::numeric_limits<mjtSize>::max() / 3 || size <= 0) {
           throw mjCError(this, "PNG texture too large");
         }
         try {
@@ -5370,7 +5378,7 @@ void mjCTexture::Compile(const mjVFS* vfs) {
     }
 
     std::int64_t size = static_cast<std::int64_t>(width)*height;
-    if (size >= std::numeric_limits<int>::max() / nchannel || size <= 0) {
+    if (size >= std::numeric_limits<int64_t>::max() / nchannel || size <= 0) {
       throw mjCError(this, "Builtin texture too large");
     }
     // allocate data
@@ -5987,7 +5995,7 @@ void mjCEquality::ResolveReferences(const mjCModel* m) {
     object_type = mjOBJ_JOINT;
   } else if (type == mjEQ_TENDON) {
     object_type = mjOBJ_TENDON;
-  } else if (type == mjEQ_FLEX) {
+  } else if (type == mjEQ_FLEX || type == mjEQ_FLEXVERT) {
     object_type = mjOBJ_FLEX;
   } else {
     throw mjCError(this, "invalid type in equality constraint");
@@ -6044,7 +6052,7 @@ void mjCEquality::Compile(void) {
   ResolveReferences(model);
 
   // make sure flex is not rigid
-  if (type == mjEQ_FLEX && model->Flexes()[obj1id]->rigid) {
+  if ((type == mjEQ_FLEX || type == mjEQ_FLEXVERT) && model->Flexes()[obj1id]->rigid) {
     throw mjCError(this, "rigid flex '%s' in equality constraint %d", name1_.c_str(), id);
   }
 }
@@ -6138,8 +6146,8 @@ void mjCTendon::CopyFromSpec() {
 
   // clear precompiled
   for (int i=0; i < path.size(); i++) {
-    if (path[i]->type == mjWRAP_CYLINDER) {
-      path[i]->type = mjWRAP_SPHERE;
+    if (path[i]->Type() == mjWRAP_CYLINDER) {
+      path[i]->spec.type = mjWRAP_SPHERE;
     }
   }
 }
@@ -6175,7 +6183,7 @@ void mjCTendon::WrapSite(std::string wrapname, std::string_view wrapinfo) {
   wrap->info = wrapinfo;
 
   // set parameters, add to path
-  wrap->type = mjWRAP_SITE;
+  wrap->spec.type = mjWRAP_SITE;
   wrap->name = wrapname;
   wrap->id = (int)path.size();
   path.push_back(wrap);
@@ -6190,7 +6198,7 @@ void mjCTendon::WrapGeom(std::string wrapname, std::string sidesite, std::string
   wrap->info = wrapinfo;
 
   // set parameters, add to path
-  wrap->type = mjWRAP_SPHERE;         // replace with cylinder later if needed
+  wrap->spec.type = mjWRAP_SPHERE;         // replace with cylinder later if needed
   wrap->name = wrapname;
   wrap->sidesite = sidesite;
   wrap->id = (int)path.size();
@@ -6206,7 +6214,7 @@ void mjCTendon::WrapJoint(std::string wrapname, double coef, std::string_view wr
   wrap->info = wrapinfo;
 
   // set parameters, add to path
-  wrap->type = mjWRAP_JOINT;
+  wrap->spec.type = mjWRAP_JOINT;
   wrap->name = wrapname;
   wrap->prm = coef;
   wrap->id = (int)path.size();
@@ -6222,7 +6230,7 @@ void mjCTendon::WrapPulley(double divisor, std::string_view wrapinfo) {
   wrap->info = wrapinfo;
 
   // set parameters, add to path
-  wrap->type = mjWRAP_PULLEY;
+  wrap->spec.type = mjWRAP_PULLEY;
   wrap->prm = divisor;
   wrap->id = (int)path.size();
   path.push_back(wrap);
@@ -6253,7 +6261,7 @@ void mjCTendon::ResolveReferences(const mjCModel* m) {
   for (int i=0; i < path.size(); i++) {
     std::string pname = path[i]->name;
     std::string psidesite = path[i]->sidesite;
-    if (path[i]->type == mjWRAP_PULLEY) {
+    if (path[i]->Type() == mjWRAP_PULLEY) {
       npulley++;
     }
     try {
@@ -6280,6 +6288,11 @@ void mjCTendon::ResolveReferences(const mjCModel* m) {
 
 // compiler
 void mjCTendon::Compile(void) {
+  // compile all wraps in the path
+  for (mjCWrap* wrap : path) {
+    wrap->Compile();
+  }
+
   CopyFromSpec();
 
   // resize userdata
@@ -6297,7 +6310,7 @@ void mjCTendon::Compile(void) {
   }
 
   // determine type
-  bool spatial = (path[0]->type != mjWRAP_JOINT);
+  bool spatial = (path[0]->Type() != mjWRAP_JOINT);
 
   // require at least two objects in spatial path
   if (spatial && sz < 2) {
@@ -6318,7 +6331,7 @@ void mjCTendon::Compile(void) {
     // fixed
     if (!spatial) {
       // make sure all objects are joints
-      if (path[i]->type != mjWRAP_JOINT) {
+      if (path[i]->Type() != mjWRAP_JOINT) {
         throw mjCError(this, "tendon '%s' (id = %d): spatial object found in fixed path at pos %d",
                        name.c_str(), id, i);
       }
@@ -6332,10 +6345,10 @@ void mjCTendon::Compile(void) {
                         name.c_str(), id);
       }
 
-      switch (path[i]->type) {
+      switch (path[i]->Type()) {
         case mjWRAP_PULLEY:
           // pulley should not follow other pulley
-          if (i > 0 && path[i-1]->type == mjWRAP_PULLEY) {
+          if (i > 0 && path[i-1]->Type() == mjWRAP_PULLEY) {
             throw mjCError(this, "tendon '%s' (id = %d): consecutive pulleys (pos %d)",
                            name.c_str(), id, i);
           }
@@ -6348,15 +6361,15 @@ void mjCTendon::Compile(void) {
 
         case mjWRAP_SITE:
           // site needs a neighbor that is not a pulley
-          if ((i == 0 || path[i-1]->type == mjWRAP_PULLEY) &&
-              (i == sz-1 || path[i+1]->type == mjWRAP_PULLEY)) {
+          if ((i == 0 || path[i-1]->Type() == mjWRAP_PULLEY) &&
+              (i == sz-1 || path[i+1]->Type() == mjWRAP_PULLEY)) {
             throw mjCError(this,
                            "tendon '%s' (id = %d): site %d needs a neighbor that is not a pulley",
                            name.c_str(), id, i);
           }
 
           // site cannot be repeated
-          if (i < sz-1 && path[i+1]->type == mjWRAP_SITE && path[i]->obj->id == path[i+1]->obj->id) {
+          if (i < sz-1 && path[i+1]->Type() == mjWRAP_SITE && path[i]->obj->id == path[i+1]->obj->id) {
             throw mjCError(this,
                            "tendon '%s' (id = %d): site %d is repeated",
                            name.c_str(), id, i);
@@ -6367,7 +6380,7 @@ void mjCTendon::Compile(void) {
         case mjWRAP_SPHERE:
         case mjWRAP_CYLINDER:
           // geom must be bracketed by sites
-          if (i == 0 || i == sz-1 || path[i-1]->type != mjWRAP_SITE || path[i+1]->type != mjWRAP_SITE) {
+          if (i == 0 || i == sz-1 || path[i-1]->Type() != mjWRAP_SITE || path[i+1]->Type() != mjWRAP_SITE) {
             throw mjCError(this,
                            "tendon '%s' (id = %d): geom at pos %d not bracketed by sites",
                            name.c_str(), id, i);
@@ -6442,7 +6455,7 @@ mjCWrap::mjCWrap(mjCModel* _model, mjCTendon* _tendon) {
   tendon = _tendon;
 
   // clear variables
-  type = mjWRAP_NONE;
+  spec.type = mjWRAP_NONE;
   obj = nullptr;
   sideid = -1;
   prm = 0;
@@ -6450,6 +6463,7 @@ mjCWrap::mjCWrap(mjCModel* _model, mjCTendon* _tendon) {
 
   // point to local
   PointToLocal();
+  CopyFromSpec();
 }
 
 
@@ -6478,7 +6492,9 @@ void mjCWrap::PointToLocal() {
   spec.info = &info;
 }
 
-
+void mjCWrap::CopyFromSpec() {
+  *static_cast<mjsWrap*>(this) = spec;
+}
 
 void mjCWrap::NameSpace(const mjCModel* m) {
   name = m->prefix + name + m->suffix;
@@ -6487,13 +6503,15 @@ void mjCWrap::NameSpace(const mjCModel* m) {
   }
 }
 
-
+void mjCWrap::Compile(void) {
+  CopyFromSpec();
+}
 
 void mjCWrap::ResolveReferences(const mjCModel* m) {
   mjCBase *pside;
 
   // handle wrap object types
-  switch (type) {
+  switch (spec.type) {
     case mjWRAP_JOINT:                        // joint
       // find joint by name
       obj = m->FindObject(mjOBJ_JOINT, name);
@@ -6516,7 +6534,7 @@ void mjCWrap::ResolveReferences(const mjCModel* m) {
 
       // set/check geom type
       if (((mjCGeom*)obj)->type == mjGEOM_CYLINDER) {
-        type = mjWRAP_CYLINDER;
+        spec.type = mjWRAP_CYLINDER;
       } else if (((mjCGeom*)obj)->type != mjGEOM_SPHERE) {
         throw mjCError(this,
                        "geom '%s' in tendon %d, wrap %d is not sphere or cylinder",
@@ -6942,6 +6960,17 @@ void mjCActuator::Compile(void) {
       throw mjCError(this, "plugin '%s' does not support actuators", pplugin->name);
     }
   }
+
+  // validate delay
+  if (delay > 0 && nsample <= 0) {
+    throw mjCError(this, "setting delay > 0 without a history buffer");
+  }
+
+  // nsample is limited to 2^24 because the cursor is stored as an mjtNum, which may be a float
+  // single-precision floats can represent all integers up to 2^24 exactly
+  if (nsample > 16777216) {
+    throw mjCError(this, "at most 2^24 samples in history buffer, got %d", nullptr, nsample);
+  }
 }
 
 
@@ -7131,7 +7160,6 @@ void mjCSensor::ResolveReferences(const mjCModel* m) {
 mjtDataType sensorDatatype(mjtSensor type) {
   switch (type) {
   case mjSENS_TOUCH:
-  case mjSENS_RANGEFINDER:
   case mjSENS_INSIDESITE:
     return mjDATATYPE_POSITIVE;
 
@@ -7178,6 +7206,7 @@ mjtDataType sensorDatatype(mjtSensor type) {
   case mjSENS_SUBTREEANGMOM:
   case mjSENS_GEOMDIST:
   case mjSENS_GEOMFROMTO:
+  case mjSENS_RANGEFINDER:
   case mjSENS_CONTACT:
   case mjSENS_TACTILE:
   case mjSENS_E_POTENTIAL:
@@ -7273,6 +7302,31 @@ void mjCSensor::Compile(void) {
     throw mjCError(this, "negative cutoff in sensor");
   }
 
+  // require non-negative interval
+  if (interval[0] < 0) {
+    throw mjCError(this, "negative interval in sensor");
+  }
+
+  // require non-positive phase
+  if (interval[1] > 0) {
+    throw mjCError(this, "positive phase in sensor");
+  }
+
+  // require phase > -period (values outside this are equivalent modulo period)
+  if (interval[0] > 0 && interval[1] <= -interval[0]) {
+    throw mjCError(this, "phase must be greater than -period in sensor");
+  }
+
+  // require nsample for delay
+  if (delay > 0 && nsample <= 0) {
+    throw mjCError(this, "setting delay > 0 without a history buffer");
+  }
+
+  // validate nsample size (max 2^24)
+  if (nsample > 16777216) {
+    throw mjCError(this, "at most 2^24 samples in sensor history buffer, got %d", nullptr, nsample);
+  }
+
   // Find referenced object
   ResolveReferences(model);
 
@@ -7295,7 +7349,6 @@ void mjCSensor::Compile(void) {
     case mjSENS_FORCE:
     case mjSENS_TORQUE:
     case mjSENS_MAGNETOMETER:
-    case mjSENS_RANGEFINDER:
     case mjSENS_CAMPROJECTION:
       // must be attached to site
       if (objtype != mjOBJ_SITE) {
@@ -7307,6 +7360,30 @@ void mjCSensor::Compile(void) {
         mjCCamera* camref = (mjCCamera*)ref;
         if (!camref->resolution[0] || !camref->resolution[1]) {
           throw mjCError(this, "camera projection sensor requires camera resolution");
+        }
+      }
+      break;
+
+    case mjSENS_RANGEFINDER:
+      {
+        // must be attached to site or camera
+        if (objtype != mjOBJ_SITE && objtype != mjOBJ_CAMERA) {
+          throw mjCError(this, "sensor must be attached to site or camera");
+        }
+
+        // check for dataspec correctness
+        int dataspec = intprm[0];
+        if (dataspec <= 0) {
+          throw mjCError(this, "data spec (intprm[0]) must be positive, got %d", nullptr, dataspec);
+        }
+        int mask = (1 << mjNRAYDATA) - 1;
+        if (!(dataspec & mask)) {
+          throw mjCError(this, "data spec intprm[0]=%d must have at least one bit set of the first "
+                         "mjNRAYDATA bits", nullptr, dataspec);
+        }
+        if (dataspec & ~mask) {
+          throw mjCError(this, "data spec intprm[0]=%d has bits set beyond the first "
+                         "mjNRAYDATA bits", nullptr, dataspec);
         }
       }
       break;

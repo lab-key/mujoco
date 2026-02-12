@@ -26,7 +26,7 @@ Tutorial notebook
 
 A MuJoCo tutorial using the Python bindings is available here: |mjcolab|
 
-.. |mjcolab| image:: https://colab.research.google.com/assets/colab-badge.svg
+.. |mjcolab| image:: https://colab.research.google.com/assets/colab-badge.png
              :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/tutorial.ipynb
 
 .. _PyInstallation:
@@ -654,6 +654,17 @@ The :ref:`mjsMesh` object includes convenience methods for model creation with n
    mesh = spec.add_mesh(name='prism')
    mesh.make_cone(nedge=5, radius=1)
 
+Texture editing
+^^^^^^^^^^^^^^^
+The :ref:`mjsTexture` buffer option stores the texture bytes in the ``data`` attribute. This attribute can be read and
+modified, for example:
+
+.. code-block:: python
+
+  texture = spec.add_texture(name='texture', height=1, width=3, nchannel=3)
+  texture.data = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255])  # Assign red, green and blue pixels.
+  texture.data[1] = 255  # Change the first pixel to yellow.
+
 .. _PyMJCF:
 
 Relationship to ``PyMJCF`` and ``bind``
@@ -796,7 +807,7 @@ values. The rollouts are run in parallel with an internally managed thread pool 
 thread) are passed as an argument. This notebook shows how to use ``rollout`` |rollout_colab|, along with some
 benchmarks e.g., the figure below.
 
-.. |rollout_colab| image:: https://colab.research.google.com/assets/colab-badge.svg
+.. |rollout_colab| image:: https://colab.research.google.com/assets/colab-badge.png
                    :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/rollout.ipynb
 
 .. image:: images/python/rollout.png
@@ -814,9 +825,9 @@ The basic usage form is
 - ``data`` is either a single instance of MjData or a sequence of compatible MjDatas of length ``nthread``.
 - ``initial_state`` is an ``nbatch x nstate`` array, with ``nbatch`` initial states of size ``nstate``, where
   ``nstate = mj_stateSize(model, mjtState.mjSTATE_FULLPHYSICS)`` is the size of the
-  :ref:`full physics state<geFullPhysics>`.
+  :ref:`full physics state<siFullPhysics>`.
 - ``control`` is a ``nbatch x nstep x ncontrol`` array of controls. Controls are by default the ``mjModel.nu`` standard
-  actuators, but any combination of :ref:`user input<geInput>` arrays can be specified by passing an optional
+  actuators, but any combination of :ref:`user input<siInput>` arrays can be specified by passing an optional
   ``control_spec`` bitflag.
 
 If a rollout diverges, the current state and sensor values are used to fill the remainder of the trajectory.
@@ -868,7 +879,7 @@ This module contains optimization-related utilities.
 The ``minimize.least_squares()`` function implements a nonlinear Least Squares optimizer solving sequential
 Quadratic Programs with :ref:`mju_boxQP`. It is documented in the associated notebook: |lscolab|
 
-.. |lscolab| image:: https://colab.research.google.com/assets/colab-badge.svg
+.. |lscolab| image:: https://colab.research.google.com/assets/colab-badge.png
              :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/least_squares.ipynb
 
 .. _PyUSDexport:
@@ -1073,7 +1084,7 @@ non-exhaustive list of specific mujoco-py features:
    The MuJoCo library’s computation is deterministic given a specific input, as explained in the :ref:`Programming
    section <Simulation>`. mujoco-py implements methods for getting and setting some of the relevant fields (and
    similarly ``dm_control.Physics`` offers methods that correspond to the flattened case). This functionality is
-   described in the :ref:`state <geState>` section.
+   described in the :ref:`State and Control<siStateControl>` section.
 
 ``sim.model.get_joint_qvel_addr(joint_name)``
    This is a convenience method in mujoco-py that returns a list of contiguous indices corresponding to this joint. The

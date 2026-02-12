@@ -1025,6 +1025,8 @@ class mjCFlex: public mjCFlex_, private mjsFlex {
 
   static constexpr int kNumEdges[3] = {1, 3, 6};  // number of edges per element indexed by dim
 
+  void SetOrder(int order) { order_ = order; }  // set interpolation order
+
  private:
   void Compile(const mjVFS* vfs);         // compiler
   void CreateBVH(void);                   // create flex BVH
@@ -1032,6 +1034,8 @@ class mjCFlex: public mjCFlex_, private mjsFlex {
 
   std::vector<double> vert0_;             // vertex positions in [0, 1]^d in the bounding box
   std::vector<double> node0_;             // node Cartesian positions
+
+  int order_ = 0;                         // interpolation order
 };
 
 
@@ -1437,14 +1441,13 @@ class mjCTexture : public mjCTexture_, private mjsTexture {
   void CopyFromSpec(void);
   void PointToLocal(void);
   void NameSpace(const mjCModel* m);
+  void Compile(const mjVFS* vfs);
 
   std::string File() const { return file_; }
   std::string get_content_type() const { return content_type_; }
   std::vector<std::string> get_cubefiles() const { return cubefiles_; }
 
  private:
-  void Compile(const mjVFS* vfs);         // compiler
-
   // store texture into asset cache
   std::string GetCacheId(const mjResource* resource, const std::string& asset_type);
   void Builtin2D(void);                                 // make builtin 2D
@@ -1705,7 +1708,6 @@ class mjCTendon : public mjCTendon_, private mjsTendon {
 
 class mjCWrap_ : public mjCBase {
  public:
-  mjtWrap type;                   // wrap object type
   int sideid;                     // side site id; -1 if not applicable
   double prm;                     // parameter: divisor, coefficient
   std::string sidesite;           // name of side site
@@ -1719,9 +1721,11 @@ class mjCWrap : public mjCWrap_, private mjsWrap {
   mjsWrap spec;
   using mjCBase::info;
 
+  void CopyFromSpec();
   void PointToLocal();
   void ResolveReferences(const mjCModel* m);
   void NameSpace(const mjCModel* m);
+  mjtWrap Type() const { return spec.type; }
 
   mjCBase* obj;                   // wrap object pointer
 
@@ -1729,6 +1733,8 @@ class mjCWrap : public mjCWrap_, private mjsWrap {
   mjCWrap(mjCModel*, mjCTendon*);            // constructor
   mjCWrap(const mjCWrap& other);             // copy constructor
   mjCWrap& operator=(const mjCWrap& other);  // copy assignment
+
+  void Compile(void);              // compiler
 
   mjCTendon* tendon;              // tendon owning this wrap
 };

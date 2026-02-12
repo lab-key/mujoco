@@ -100,7 +100,7 @@ Size type used to represent buffer sizes.
 
 .. code-block:: C
 
-   typedef uint64_t mjtSize;
+   typedef int64_t mjtSize;
 
 
 .. _tyEnums:
@@ -164,6 +164,16 @@ second group are geom types that cannot be used in the model but are used by the
 elements. These values are used in ``m->geom_type`` and ``m->site_type``.
 
 .. mujoco-include:: mjtGeom
+
+
+.. _mjtProjection:
+
+mjtProjection
+~~~~~~~~~~~~~
+
+Type of camera projection. Used in ``m->cam_projection``.
+
+.. mujoco-include:: mjtProjection
 
 
 .. _mjtCamLight:
@@ -380,6 +390,17 @@ last argument to :ref:`mj_local2global`.
 .. mujoco-include:: mjtSameFrame
 
 
+.. _mjtSleepPolicy:
+
+mjtSleepPolicy
+~~~~~~~~~~~~~~
+
+Sleep policy associated with a tree. The compiler automatically chooses between ``NEVER`` and ``ALLOWED``, but the user
+can override this choice. Only the user can set the ``INIT`` policy (initialized as asleep).
+
+.. mujoco-include:: mjtSleepPolicy
+
+
 .. _mjtFlexSelf:
 
 mjtFlexSelf
@@ -462,6 +483,15 @@ Timer types. The number of timer types is given by ``mjNTIMER`` which is also th
 
 .. mujoco-include:: mjtTimer
 
+
+.. _mjtSleepState:
+
+mjtSleepState
+~~~~~~~~~~~~~
+
+Sleep state of an object.
+
+.. mujoco-include:: mjtSleepState
 
 
 .. _tyVisEnums:

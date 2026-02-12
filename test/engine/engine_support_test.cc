@@ -17,9 +17,11 @@
 #include "src/engine/engine_core_util.h"
 #include "src/engine/engine_support.h"
 
+#include <cstring>
 #include <limits>
 #include <random>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -35,6 +37,7 @@ using ::testing::ContainsRegex;  // NOLINT
 using ::testing::DoubleNear;
 using ::testing::Eq;
 using ::testing::MatchesRegex;
+using ::testing::Ne;
 using ::testing::NotNull;
 using ::testing::Pointwise;
 
@@ -689,7 +692,9 @@ TEST_F(SupportTest, DifferentiatePosSubQuat) {
 
 static const char* const kDefaultModel = "testdata/model.xml";
 
-TEST_F(SupportTest, GetSetStateStepEqual) {
+using StateTest = MujocoTest;
+
+TEST_F(StateTest, GetSetStateStepEqual) {
   const std::string xml_path = GetTestDataFilePath(kDefaultModel);
   mjModel* model = mj_loadXML(xml_path.c_str(), nullptr, nullptr, 0);
   mjData* data = mj_makeData(model);
@@ -737,6 +742,188 @@ TEST_F(SupportTest, GetSetStateStepEqual) {
 
   // expect the state to be the same after re-stepping
   EXPECT_EQ(state1a, state1b);
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
+TEST_F(StateTest, GetSetStateDelay) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01"/>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="slide" delay="0.05" nsample="5"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  mjModel* model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  mjData* data = mj_makeData(model);
+
+  // verify history buffer exists: nhistory = 2 + 2*5 = 12
+  EXPECT_EQ(model->nhistory, 12);  // [user, cursor, times(5), values(5)]
+
+  // state size should include history buffer
+  int size = mj_stateSize(model, mjSTATE_HISTORY);
+  EXPECT_EQ(size, model->nhistory);
+
+  // step to populate history buffer
+  data->ctrl[0] = 1.0;
+  mj_step(model, data);
+  data->ctrl[0] = 2.0;
+  mj_step(model, data);
+
+  // get history state
+  vector<mjtNum> history_state(size);
+  mj_getState(model, data, history_state.data(), mjSTATE_HISTORY);
+
+  // modify the history buffer manually (value at index 7 = 2+5 = after times)
+  data->history[7] = 99.0;  // first value
+
+  // set history state back - should restore original
+  mj_setState(model, data, history_state.data(), mjSTATE_HISTORY);
+
+  // verify restoration
+  EXPECT_NE(data->history[7], 99.0);
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
+TEST_F(StateTest, CopyState) {
+  const std::string xml_path = GetTestDataFilePath(kDefaultModel);
+  mjModel* m = mj_loadXML(xml_path.c_str(), nullptr, nullptr, 0);
+
+  mjData* src = mj_makeData(m);
+  mjData* dst = mj_makeData(m);
+
+  // init both datas to default
+  mj_resetData(m, src);
+  mj_resetData(m, dst);
+
+  // modify d_src
+  src->time = 1.23;
+  for (int i=0; i < m->nq; ++i) src->qpos[i] = i*0.1;
+  for (int i=0; i < m->nv; ++i) src->qvel[i] = i*0.2;
+  for (int i=0; i < m->na; ++i) src->act[i] = i*0.3;
+  for (int i=0; i < m->nu; ++i) src->ctrl[i] = i*0.4;
+  for (int i=0; i < m->nhistory; ++i) src->history[i] = i*0.5;
+
+  for (int i=0; i < m->neq; ++i) src->eq_active[i] = 1 - m->eq_active0[i];
+
+  // check that states differ
+  EXPECT_NE(src->time, dst->time);
+  EXPECT_THAT(AsVector(src->qpos, m->nq), Ne(AsVector(dst->qpos, m->nq)));
+  EXPECT_THAT(AsVector(src->ctrl, m->nu), Ne(AsVector(dst->ctrl, m->nu)));
+
+  // copy state with signature
+  int signature = mjSTATE_FULLPHYSICS | mjSTATE_EQ_ACTIVE;
+  mj_copyState(m, src, dst, signature);
+
+  // check copied components
+  EXPECT_EQ(dst->time, src->time);
+  EXPECT_EQ(AsVector(dst->qpos, m->nq), AsVector(src->qpos, m->nq));
+  EXPECT_EQ(AsVector(dst->qvel, m->nv), AsVector(src->qvel, m->nv));
+  EXPECT_EQ(AsVector(dst->act, m->na), AsVector(src->act, m->na));
+  EXPECT_EQ(AsVector(dst->history, m->nhistory),
+            AsVector(src->history, m->nhistory));
+  EXPECT_EQ(AsVector(dst->eq_active, m->neq), AsVector(src->eq_active, m->neq));
+
+  // check non-copied components (CTRL not in signature)
+  EXPECT_THAT(AsVector(dst->ctrl, m->nu), Ne(AsVector(src->ctrl, m->nu)));
+  EXPECT_EQ(AsVector(dst->ctrl, m->nu), vector<mjtNum>(m->nu, 0.0));
+
+  mj_deleteData(src);
+  mj_deleteData(dst);
+  mj_deleteModel(m);
+}
+
+TEST_F(StateTest, ExtractState) {
+  const std::string xml_path = GetTestDataFilePath(kDefaultModel);
+  mjModel* model = mj_loadXML(xml_path.c_str(), nullptr, nullptr, 0);
+  mjData* data = mj_makeData(model);
+
+  // make distribution using seed
+  std::mt19937_64 rng;
+  rng.seed(3);
+  std::normal_distribution<double> dist(0, .01);
+
+  // set controls and applied joint forces to random values
+  for (int i=0; i < model->nu; i++) data->ctrl[i] = dist(rng);
+  for (int i=0; i < model->nv; i++) data->qfrc_applied[i] = dist(rng);
+  for (int i=0; i < model->neq; i++) data->eq_active[i] = dist(rng) > 0;
+
+  // take one step
+  mj_step(model, data);
+
+  // take a state that will be used as src
+  int srcsig = mjSTATE_TIME | mjSTATE_QPOS | mjSTATE_QVEL | mjSTATE_CTRL |
+               mjSTATE_HISTORY;
+  int srcsize = mj_stateSize(model, srcsig);
+  vector<mjtNum> srcstate(srcsize);
+  mj_getState(model, data, srcstate.data(), srcsig);
+
+  // extract a subset consisting of only a single bit in srcsig
+  int dstsig1 = mjSTATE_CTRL;
+  int dstsize1 = mj_stateSize(model, dstsig1);
+  EXPECT_LT(dstsize1, srcsize);
+  EXPECT_EQ(dstsize1, model->nu);
+  vector<mjtNum> dststate1(dstsize1);
+  mj_extractState(model, srcstate.data(), srcsig, dststate1.data(), dstsig1);
+  EXPECT_EQ(dststate1, AsVector(data->ctrl, model->nu));
+
+  // extract a subset consisting of multiple non-consecutive bits in srcsig
+  int dstsig2 = mjSTATE_QPOS | mjSTATE_CTRL;
+  int dstsize2 = mj_stateSize(model, dstsig2);
+  EXPECT_LT(dstsize2, srcsize);
+  EXPECT_EQ(dstsize2, model->nq + model->nu);
+  vector<mjtNum> dststate2(dstsize2);
+  mj_extractState(model, srcstate.data(), srcsig, dststate2.data(), dstsig2);
+  EXPECT_EQ(AsVector(dststate2.data(), model->nq),
+            AsVector(data->qpos, model->nq));
+  EXPECT_EQ(AsVector(dststate2.data() + model->nq, model->nu),
+            AsVector(data->ctrl, model->nu));
+
+  // extract history state
+  int dstsig3 = mjSTATE_HISTORY;
+  int dstsize3 = mj_stateSize(model, dstsig3);
+  EXPECT_EQ(dstsize3, model->nhistory);
+  vector<mjtNum> dststate3(dstsize3);
+  mj_extractState(model, srcstate.data(), srcsig, dststate3.data(), dstsig3);
+  EXPECT_EQ(dststate3, AsVector(data->history, model->nhistory));
+
+  // test that an error is correctly raised if dstsig is not a subset of srcsig
+  static int error_count;
+  static char last_error_msg[128];
+  error_count = 0;
+  last_error_msg[0] = '\0';
+  auto* error_handler = +[](const char* msg) {
+    std::strncpy(last_error_msg, msg, sizeof(last_error_msg));
+    ++error_count;
+  };
+
+  auto* old_mju_user_error = mju_user_error;
+  mju_user_error = error_handler;
+
+  mj_extractState(model, nullptr, srcsig, nullptr, mjSTATE_QFRC_APPLIED);
+  EXPECT_EQ(error_count, 1);
+  EXPECT_EQ(std::string_view(last_error_msg),
+            "mj_extractState: dstsig is not a subset of srcsig");
+
+  mj_extractState(model, nullptr, -1, nullptr, mjSTATE_QFRC_APPLIED);
+  EXPECT_EQ(error_count, 2);
+  EXPECT_EQ(std::string_view(last_error_msg),
+            "mj_extractState: invalid srcsig -1 < 0");
+
+  mju_user_error = old_mju_user_error;
 
   mj_deleteData(data);
   mj_deleteModel(model);
@@ -912,7 +1099,7 @@ TEST_F(InertiaTest, FullM) {
   mj_deleteModel(m);
 }
 
-static constexpr char GeomDistanceTestingModel[] = R"(
+static constexpr char GeomDistanceTestingModel1[] = R"(
 <mujoco>
   <option>
     <flag nativeccd="enable"/>
@@ -931,10 +1118,19 @@ static constexpr char GeomDistanceTestingModel[] = R"(
 </mujoco>
 )";
 
+static constexpr char GeomDistanceTestingModel2[] = R"(
+<mujoco>
+  <worldbody>
+    <geom type="sphere" size=".1"/>
+    <geom type="ellipsoid" size=".1 .1 .1" pos="0 0 1"/>
+  </worldbody>
+</mujoco>
+)";
+
 TEST_F(SupportTest, GeomDistance) {
   char error[1024];
   mjModel* model =
-      LoadModelFromString(GeomDistanceTestingModel, error, sizeof(error));
+      LoadModelFromString(GeomDistanceTestingModel1, error, sizeof(error));
   ASSERT_THAT(model, NotNull()) << error;
   mjData* data = mj_makeData(model);
   mj_kinematics(model, data);
@@ -974,15 +1170,41 @@ TEST_F(SupportTest, GeomDistance) {
   EXPECT_THAT(mj_geomDistance(model, data, 3, 1, distmax, fromto),
               DoubleNear(0.7, eps));
   EXPECT_THAT(fromto, Pointwise(DoubleNear(eps),
-                                vector<mjtNum>{0, 0, .8, 0, 0, .1}));
+                                vector<mjtNum>{0, 0, .1, 0, 0, .8}));
 
   // mesh-sphere (far distmax)
   distmax = 1.0;
   EXPECT_THAT(mj_geomDistance(model, data, 3, 1, distmax, fromto),
               DoubleNear(0.7, eps));
   EXPECT_THAT(fromto, Pointwise(DoubleNear(eps),
-                                vector<mjtNum>{0, 0, .8, 0, 0, .1}));
+                                vector<mjtNum>{0, 0, .1, 0, 0, .8}));
 
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
+TEST_F(SupportTest, GeomDistanceFromToFlipped) {
+  mjtNum distmax = 10.0;
+  char error[1024];
+  mjModel* model =
+      LoadModelFromString(GeomDistanceTestingModel2, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  mjData* data = mj_makeData(model);
+  mj_kinematics(model, data);
+
+  mjtNum fromto01[6];
+  mjtNum fromto10[6];
+
+  for (int flag : {0, (int)mjDSBL_NATIVECCD}) {
+    model->opt.disableflags = flag;
+    mj_geomDistance(model, data, 0, 1, distmax, fromto01);
+    mj_geomDistance(model, data, 1, 0, distmax, fromto10);
+    mjtNum fromto10flipped[6] = {fromto10[3], fromto10[4], fromto10[5],
+                                 fromto10[0], fromto10[1], fromto10[2]};
+
+    EXPECT_THAT(AsVector(fromto10flipped, 6),
+                Pointwise(DoubleNear(1.0e-12), fromto01));
+  }
   mj_deleteData(data);
   mj_deleteModel(model);
 }
@@ -1045,5 +1267,205 @@ TEST_F(SupportTest, ContactSensorDim) {
   EXPECT_EQ(mju_condataSize(dataSpec), 1+3+1+3+3);
 }
 
+// ------------------------------ ctrl delays --------------------------------
+
+TEST_F(SupportTest, ReadCtrlNoDelay) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="slide"/>
+    </actuator>
+  </mujoco>
+  )";
+  mjModel* model = LoadModelFromString(xml);
+  ASSERT_THAT(model, NotNull());
+  mjData* data = mj_makeData(model);
+
+  // no delay: should return current ctrl value
+  data->ctrl[0] = 42.0;
+  EXPECT_EQ(mj_readCtrl(model, data, 0, data->time, /*order=*/0), 42.0);
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
+TEST_F(SupportTest, ReadCtrlWithDelay) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01"/>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="slide" delay="0.03" nsample="3"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  mjModel* model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  mjData* data = mj_makeData(model);
+
+  // model should have delay configured
+  // delay = 0.03 seconds, timestep = 0.01, so ndelay = ceil(0.03/0.01) = 3
+  EXPECT_EQ(model->actuator_history[0], 3);
+  EXPECT_NEAR(model->actuator_delay[0], 0.03, 1e-10);
+  EXPECT_GE(model->actuator_historyadr[0], 0);
+
+  // initially, buffer should be filled with constant value (from init)
+  // reading at current time should return the init value
+  mjtNum val = mj_readCtrl(model, data, 0, data->time, /*order=*/0);
+  EXPECT_EQ(val, data->ctrl[0]);
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
+TEST_F(SupportTest, InitCtrlDelay) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01"/>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="slide" delay="0.02" nsample="3"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  mjModel* model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  mjData* data = mj_makeData(model);
+
+  // verify nhistory
+  EXPECT_EQ(model->actuator_history[0], 3);
+
+  // initialize with custom times and values
+  // buffer stores: time 0.0 -> value 1.0, time 0.01 -> value 2.0, time 0.02 -> value 3.0
+  mjtNum times[3] = {0.0, 0.01, 0.02};
+  mjtNum values[3] = {1.0, 2.0, 3.0};
+  mj_initCtrlHistory(model, data, 0, times, values);
+
+  // mj_readCtrl now auto-subtracts delay: lookup_time = time - delay
+  // delay = 0.02, so:
+  //   time=0.04 -> lookup at 0.02 -> value 3.0
+  //   time=0.03 -> lookup at 0.01 -> value 2.0
+  //   time=0.02 -> lookup at 0.00 -> value 1.0
+  mjtNum val = mj_readCtrl(model, data, 0, 0.04, /*order=*/0);
+  EXPECT_EQ(val, 3.0);
+
+  val = mj_readCtrl(model, data, 0, 0.03, /*order=*/0);
+  EXPECT_EQ(val, 2.0);
+
+  val = mj_readCtrl(model, data, 0, 0.02, /*order=*/0);
+  EXPECT_EQ(val, 1.0);
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
+TEST_F(SupportTest, InitCtrlDelayNullTimes) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01"/>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="slide" delay="0.02" nsample="3"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  mjModel* model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  mjData* data = mj_makeData(model);
+
+  // get existing times from buffer
+  int adr = model->actuator_historyadr[0];
+  mjtNum* buf = data->history + adr;
+  mjtNum existing_times[3] = {buf[2], buf[3], buf[4]};
+
+  // initialize with NULL times (use existing) and new values
+  mjtNum values[3] = {10.0, 20.0, 30.0};
+  mj_initCtrlHistory(model, data, 0, nullptr, values);
+
+  // verify times are unchanged
+  EXPECT_EQ(buf[2], existing_times[0]);
+  EXPECT_EQ(buf[3], existing_times[1]);
+  EXPECT_EQ(buf[4], existing_times[2]);
+
+  // verify values are updated
+  EXPECT_EQ(buf[5], 10.0);
+  EXPECT_EQ(buf[6], 20.0);
+  EXPECT_EQ(buf[7], 30.0);
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
+TEST_F(SupportTest, InitSensorDelay) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01"/>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <jointpos joint="slide" delay="0.02" nsample="3"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  mjModel* model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  mjData* data = mj_makeData(model);
+
+  // verify nsample for sensor
+  EXPECT_EQ(model->sensor_history[0], 3);
+
+  // initialize with custom times and values, phase=0
+  // buffer stores: time 0.0 -> value 0.5, time 0.01 -> value 0.6, time 0.02 -> value 0.7
+  mjtNum times[3] = {0.0, 0.01, 0.02};
+  mjtNum values[3] = {0.5, 0.6, 0.7};
+  mj_initSensorHistory(model, data, 0, times, values, /*phase=*/0.0);
+
+  // mj_readSensor now auto-subtracts delay: lookup_time = time - delay
+  // delay = 0.02, so:
+  //   time=0.04 -> lookup at 0.02 -> value 0.7
+  //   time=0.03 -> lookup at 0.01 -> value 0.6
+  mjtNum result = 0;
+  const mjtNum* ptr = mj_readSensor(model, data, 0, 0.04, &result, /*order=*/0);
+  mjtNum val = ptr ? *ptr : result;
+  EXPECT_EQ(val, 0.7);
+
+  ptr = mj_readSensor(model, data, 0, 0.03, &result, /*order=*/0);
+  val = ptr ? *ptr : result;
+  EXPECT_EQ(val, 0.6);
+
+  mj_deleteData(data);
+  mj_deleteModel(model);
+}
+
 }  // namespace
 }  // namespace mujoco
+

@@ -89,7 +89,7 @@ void mj_jacSparseSimple(const mjModel* m, const mjData* d,
 MJAPI int mj_jacDifPair(const mjModel* m, const mjData* d, int* chain,
                         int b1, int b2, const mjtNum pos1[3], const mjtNum pos2[3],
                         mjtNum* jac1p, mjtNum* jac2p, mjtNum* jacdifp,
-                        mjtNum* jac1r, mjtNum* jac2r, mjtNum* jacdifr);
+                        mjtNum* jac1r, mjtNum* jac2r, mjtNum* jacdifr, int issparse);
 
 // dense or sparse weighted sum of multiple body Jacobians at same point
 int mj_jacSum(const mjModel* m, mjData* d, int* chain,
@@ -114,16 +114,19 @@ MJAPI void mj_objectVelocity(const mjModel* m, const mjData* d,
 MJAPI void mj_objectAcceleration(const mjModel* m, const mjData* d,
                                  int objtype, int objid, mjtNum res[6], int flg_local);
 
-
-//-------------------------- miscellaneous ---------------------------------------------------------
-
 // map from body local to global Cartesian coordinates
 MJAPI void mj_local2Global(mjData* d, mjtNum xpos[3], mjtNum xmat[9],
                            const mjtNum pos[3], const mjtNum quat[4],
                            int body, mjtByte sameframe);
 
+
+//-------------------------- miscellaneous ---------------------------------------------------------
+
 // extract 6D force:torque for one contact, in contact frame
 MJAPI void mj_contactForce(const mjModel* m, const mjData* d, int id, mjtNum result[6]);
+
+// count the number of length limit violations for tendon i (0, 1 or 2)
+int tendonLimit(const mjModel* m, const mjtNum* ten_length, int i);
 
 // high-level warning function: count warnings in mjData, print only the first time
 MJAPI void mj_warning(mjData* d, int warning, int info);
